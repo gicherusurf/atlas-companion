@@ -14,6 +14,30 @@ export type Database = {
   }
   public: {
     Tables: {
+      profiles: {
+        Row: {
+          avatar: string | null
+          company: string | null
+          created_at: string
+          full_name: string | null
+          id: string
+        }
+        Insert: {
+          avatar?: string | null
+          company?: string | null
+          created_at?: string
+          full_name?: string | null
+          id: string
+        }
+        Update: {
+          avatar?: string | null
+          company?: string | null
+          created_at?: string
+          full_name?: string | null
+          id?: string
+        }
+        Relationships: []
+      }
       projects: {
         Row: {
           country: string | null
