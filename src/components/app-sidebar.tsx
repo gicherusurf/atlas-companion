@@ -11,6 +11,7 @@ import {
   Settings,
   Compass,
   LogOut,
+  Network,
 } from "lucide-react";
 import {
   Sidebar,
