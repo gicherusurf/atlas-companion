@@ -11,6 +11,7 @@ import {
   Settings,
   Compass,
   LogOut,
+  Network,
 } from "lucide-react";
 import {
   Sidebar,
@@ -32,6 +33,7 @@ const items = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Knowledge", url: "/knowledge", icon: BookOpen },
+  { title: "Knowledge Graph", url: "/knowledge-graph", icon: Network },
   { title: "Keywords", url: "/keywords", icon: Search },
   { title: "Content", url: "/content", icon: FileText },
   { title: "Publishing", url: "/publishing", icon: Send },

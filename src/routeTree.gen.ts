@@ -15,6 +15,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
 import { Route as AuthenticatedPublishingRouteImport } from './routes/_authenticated/publishing'
 import { Route as AuthenticatedProjectsRouteImport } from './routes/_authenticated/projects'
+import { Route as AuthenticatedKnowledgeGraphRouteImport } from './routes/_authenticated/knowledge-graph'
 import { Route as AuthenticatedKnowledgeRouteImport } from './routes/_authenticated/knowledge'
 import { Route as AuthenticatedKeywordsRouteImport } from './routes/_authenticated/keywords'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
@@ -51,6 +52,12 @@ const AuthenticatedProjectsRoute = AuthenticatedProjectsRouteImport.update({
   path: '/projects',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedKnowledgeGraphRoute =
+  AuthenticatedKnowledgeGraphRouteImport.update({
+    id: '/knowledge-graph',
+    path: '/knowledge-graph',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedKnowledgeRoute = AuthenticatedKnowledgeRouteImport.update({
   id: '/knowledge',
   path: '/knowledge',
@@ -92,6 +99,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/keywords': typeof AuthenticatedKeywordsRoute
   '/knowledge': typeof AuthenticatedKnowledgeRoute
+  '/knowledge-graph': typeof AuthenticatedKnowledgeGraphRoute
   '/projects': typeof AuthenticatedProjectsRoute
   '/publishing': typeof AuthenticatedPublishingRoute
   '/settings': typeof AuthenticatedSettingsRoute
@@ -105,6 +113,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/keywords': typeof AuthenticatedKeywordsRoute
   '/knowledge': typeof AuthenticatedKnowledgeRoute
+  '/knowledge-graph': typeof AuthenticatedKnowledgeGraphRoute
   '/projects': typeof AuthenticatedProjectsRoute
   '/publishing': typeof AuthenticatedPublishingRoute
   '/settings': typeof AuthenticatedSettingsRoute
@@ -120,6 +129,7 @@ export interface FileRoutesById {
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/keywords': typeof AuthenticatedKeywordsRoute
   '/_authenticated/knowledge': typeof AuthenticatedKnowledgeRoute
+  '/_authenticated/knowledge-graph': typeof AuthenticatedKnowledgeGraphRoute
   '/_authenticated/projects': typeof AuthenticatedProjectsRoute
   '/_authenticated/publishing': typeof AuthenticatedPublishingRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
@@ -135,6 +145,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/keywords'
     | '/knowledge'
+    | '/knowledge-graph'
     | '/projects'
     | '/publishing'
     | '/settings'
@@ -148,6 +159,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/keywords'
     | '/knowledge'
+    | '/knowledge-graph'
     | '/projects'
     | '/publishing'
     | '/settings'
@@ -162,6 +174,7 @@ export interface FileRouteTypes {
     | '/_authenticated/dashboard'
     | '/_authenticated/keywords'
     | '/_authenticated/knowledge'
+    | '/_authenticated/knowledge-graph'
     | '/_authenticated/projects'
     | '/_authenticated/publishing'
     | '/_authenticated/settings'
@@ -217,6 +230,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedProjectsRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/knowledge-graph': {
+      id: '/_authenticated/knowledge-graph'
+      path: '/knowledge-graph'
+      fullPath: '/knowledge-graph'
+      preLoaderRoute: typeof AuthenticatedKnowledgeGraphRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/knowledge': {
       id: '/_authenticated/knowledge'
       path: '/knowledge'
@@ -269,6 +289,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
   AuthenticatedKeywordsRoute: typeof AuthenticatedKeywordsRoute
   AuthenticatedKnowledgeRoute: typeof AuthenticatedKnowledgeRoute
+  AuthenticatedKnowledgeGraphRoute: typeof AuthenticatedKnowledgeGraphRoute
   AuthenticatedProjectsRoute: typeof AuthenticatedProjectsRoute
   AuthenticatedPublishingRoute: typeof AuthenticatedPublishingRoute
   AuthenticatedSettingsRoute: typeof AuthenticatedSettingsRoute
@@ -281,6 +302,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
   AuthenticatedKeywordsRoute: AuthenticatedKeywordsRoute,
   AuthenticatedKnowledgeRoute: AuthenticatedKnowledgeRoute,
+  AuthenticatedKnowledgeGraphRoute: AuthenticatedKnowledgeGraphRoute,
   AuthenticatedProjectsRoute: AuthenticatedProjectsRoute,
   AuthenticatedPublishingRoute: AuthenticatedPublishingRoute,
   AuthenticatedSettingsRoute: AuthenticatedSettingsRoute,
