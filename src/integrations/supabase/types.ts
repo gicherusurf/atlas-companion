@@ -40,6 +40,7 @@ export type Database = {
       }
       projects: {
         Row: {
+          archived: boolean
           country: string | null
           created_at: string
           description: string | null
@@ -51,6 +52,7 @@ export type Database = {
           website: string | null
         }
         Insert: {
+          archived?: boolean
           country?: string | null
           created_at?: string
           description?: string | null
@@ -62,6 +64,7 @@ export type Database = {
           website?: string | null
         }
         Update: {
+          archived?: boolean
           country?: string | null
           created_at?: string
           description?: string | null
