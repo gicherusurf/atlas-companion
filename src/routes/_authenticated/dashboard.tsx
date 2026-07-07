@@ -38,7 +38,7 @@ function Dashboard() {
     <div className="mx-auto max-w-7xl space-y-6">
       {/* Welcome */}
       <Card className="relative overflow-hidden border-border/60">
-        <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top_right,hsl(var(--primary)/0.18),transparent_60%)]" />
+        <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top_right,color-mix(in_oklab,var(--primary)_22%,transparent),transparent_60%)]" />
         <CardHeader>
           <CardDescription>Welcome back</CardDescription>
           <CardTitle className="text-2xl md:text-3xl">Good to see you, {name}.</CardTitle>

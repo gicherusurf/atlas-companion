@@ -61,7 +61,7 @@ function AuthPage() {
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4">
-      <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,hsl(var(--primary)/0.15),transparent_60%)]" />
+      <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,color-mix(in_oklab,var(--primary)_18%,transparent),transparent_60%)]" />
       <div className="w-full max-w-md">
         <div className="mb-8 flex items-center justify-center gap-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
