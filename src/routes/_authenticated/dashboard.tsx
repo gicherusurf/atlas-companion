@@ -1,3 +1,4 @@
+import { BusinessCard } from "@/components/dashboard/BusinessCard";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { listProjects } from "@/lib/projects-api";
@@ -34,16 +35,21 @@ function Dashboard() {
   const recent = active.slice(0, 5);
   const name = user?.user_metadata?.full_name ?? user?.email?.split("@")[0] ?? "there";
 
-  return (
-    <div className="mx-auto max-w-7xl space-y-6">
-      {/* Welcome */}
-      <Card className="relative overflow-hidden border-border/60">
-        <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top_right,color-mix(in_oklab,var(--primary)_22%,transparent),transparent_60%)]" />
-        <CardHeader>
-          <CardDescription>Welcome back</CardDescription>
-          <CardTitle className="text-2xl md:text-3xl">Good to see you, {name}.</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-wrap items-center gap-3">
+ return (
+  <div className="mx-auto max-w-7xl space-y-6">
+    {/* Welcome */}
+    <Card className="relative overflow-hidden border-border/60">
+      <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top_right,color-mix(in_oklab,var(--primary)_22%,transparent),transparent_60%)]" />
+
+      <CardHeader>
+        <CardDescription>Atlas AI Business Operating System</CardDescription>
+
+        <CardTitle className="text-2xl md:text-3xl">
+          Welcome, {name} 👋
+        </CardTitle>
+      </CardHeader>
+
+      <CardContent className="flex flex-wrap items-center gap-3">
           <Button asChild>
             <Link to="/projects">
               <Plus className="mr-2 h-4 w-4" /> New project
@@ -82,8 +88,9 @@ function Dashboard() {
         <Card className="lg:col-span-2">
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
             <div>
-              <CardTitle className="text-base">Recent projects</CardTitle>
-              <CardDescription>Your most recently updated projects</CardDescription>
+              <CardTitle className="text-base">My Businesses</CardTitle>
+
+<CardDescription>Select a business workspace</CardDescription>
             </div>
             <Button variant="ghost" size="sm" asChild>
               <Link to="/projects">
@@ -92,38 +99,32 @@ function Dashboard() {
             </Button>
           </CardHeader>
           <CardContent>
-            {isLoading ? (
-              <div className="space-y-2">
-                {[...Array(3)].map((_, i) => (
-                  <Skeleton key={i} className="h-14 w-full" />
-                ))}
-              </div>
-            ) : recent.length === 0 ? (
-              <EmptyState />
-            ) : (
-              <ul className="divide-y divide-border/60">
-                {recent.map((p) => (
-                  <li key={p.id} className="flex items-center justify-between py-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{p.name}</p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {p.website || p.industry || "No details"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      {p.industry && (
-                        <Badge variant="secondary" className="hidden sm:inline-flex">
-                          {p.industry}
-                        </Badge>
-                      )}
-                      <span className="text-xs text-muted-foreground">
-                        {formatDistanceToNow(new Date(p.updated_at), { addSuffix: true })}
-                      </span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <div className="grid gap-3">
+<BusinessCard
+  emoji="🏅"
+  name="Huobi Gold Solutions"
+  industry="Gold Export & Precious Metals"
+/>
+
+<BusinessCard
+  emoji="🎲"
+  name="BingwaX"
+  industry="Sports Betting & Casino"
+/>
+
+<BusinessCard
+  emoji="📈"
+  name="FootMarket"
+  industry="Prediction Exchange"
+/>
+
+<BusinessCard
+  emoji="🤖"
+  name="Atlas"
+  industry="AI Operating System"
+/>
+    </div>
+  
           </CardContent>
         </Card>
 
