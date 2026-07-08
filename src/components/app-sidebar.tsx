@@ -1,6 +1,7 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
   LayoutDashboard,
+  Dna,
   FolderKanban,
   BookOpen,
   Search,
@@ -31,6 +32,7 @@ import { Button } from "@/components/ui/button";
 
 const items = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
+  { title: "Business DNA", url: "/business-dna", icon: Dna },
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Knowledge", url: "/knowledge", icon: BookOpen },
   { title: "Knowledge Graph", url: "/knowledge-graph", icon: Network },
