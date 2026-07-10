@@ -31,7 +31,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 
 const items = [
-  { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
+  { title: "Mission Control", url: "/mission-control", icon: LayoutDashboard },
   { title: "Business DNA", url: "/business-dna", icon: Dna },
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Knowledge", url: "/knowledge", icon: BookOpen },
