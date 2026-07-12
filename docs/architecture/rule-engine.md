@@ -9,22 +9,91 @@ SEO, Marketing, Finance, Sales, or Content analysis itself. It has no
 opinion on what facts mean — it only checks whether a fact matches what a
 rule expects, and reports the outcome.
 
+## Evolution: v1 to Multi-Condition Rules
+
+The Rule Engine originally shipped supporting **single-condition rules
+only** — a rule carried exactly one `field`/`operator`/`expectedValue`
+triple, evaluated via a switch statement over `RuleOperator`. This
+section documents what changed and, just as importantly, what didn't.
+
+**What's new, purely additive:**
+
+- **Multi-condition rules.** A `Rule` may now carry an optional
+  `conditions: RuleCondition[]` array. When present and non-empty, the
+  rule is evaluated with AND semantics — every condition must pass for
+  the rule to pass. This is what lets one rule express something like
+  "titleLength lessThanOrEqual 60 AND canonicalUrl exists" that a
+  single-condition rule couldn't represent.
+- **Two new operators:** `startsWith` and `endsWith`, alongside the
+  original eleven.
+- **snake_case operator aliases.** Some rule authors (an external rule
+  source, a future rule-authoring UI following REST/JSON naming
+  conventions) may prefer `not_equals` over `notEquals`. Both are
+  accepted everywhere an operator appears; `normalizeRuleOperator()`
+  (exported from `rule-engine.ts`) maps any alias to its canonical
+  camelCase form before evaluation. Only the canonical form is ever
+  treated as "the" operator internally — aliases are a compatibility
+  layer, not a second parallel implementation.
+- **`evaluateOperator()`**, a proper dispatcher function backed by a
+  `Record<RuleOperator, ...>` lookup map (`OPERATOR_REGISTRY`), replacing
+  the original switch statement. Adding a future operator now means one
+  new map entry, not a new `case`.
+- **`validateRule()`**, a new method that checks a rule's structure
+  (has conditions to evaluate, uses a recognized operator, has a valid
+  regex pattern where relevant) independent of evaluating it against any
+  facts.
+- **`RuleResult.matchedConditions` and `RuleResult.executionTimeMs`**,
+  two new optional fields giving a per-condition breakdown and timing
+  information that wasn't previously available.
+
+**What's unchanged, and guaranteed to stay working:**
+
+- Every v1 field — `field`, `operator`, `expectedValue` on `Rule` itself,
+  and `actualValue`/`expectedValue`/`evaluatedAt` on `RuleResult` — still
+  exists, with identical meaning. A rule built the old way, with no
+  `conditions` array, evaluates through exactly the same logic path
+  (`resolveConditions()` falls back to treating `field`/`operator`/
+  `expectedValue` as a single implied condition) and produces a
+  `RuleResult` with the same `message` wording as before.
+- Every v1 method signature — `evaluateRule(rule, facts)`,
+  `evaluateRules(businessId, rules, facts)`, `createRule`, `updateRule`,
+  `deleteRule`, `getRule`, `listRules`, `listRulesByCategory` — is
+  unchanged.
+- `RuleCategory`, `RuleSeverity`, and `RuleStatus` are untouched. This
+  revision deliberately did not introduce alternate vocabularies for
+  these (e.g. an `"active"` status alongside `"enabled"`) — only the
+  operator-naming and single-vs-multi-condition concerns were in scope
+  for this evolution.
+- A rule that defines neither `conditions` nor a legacy `field`/
+  `operator` pair does not crash `evaluateRule()` — it returns a
+  `RuleResult` with `passed: false` and an explanatory message, and
+  `validateRule()` flags it as invalid before it ever reaches evaluation.
+
+This was verified concretely, not just asserted: a runtime smoke test
+(legacy single-condition rules, new multi-condition rules, operator
+aliases, and `validateRule()`, all evaluated against real facts) was
+compiled and executed as part of this change, confirming identical
+behavior for v1-style rules and correct behavior for the new
+capabilities, before this revision was committed.
+
 ## Responsibilities
 
 - Define a reusable `Rule` shape: a name, description, category,
-  severity, status, a `field` to read from supplied facts, an `operator`
-  to compare it with, an `expectedValue`, and a `recommendation` to
-  surface if the rule fails.
+  severity, status, either a `field`/`operator`/`expectedValue` triple
+  (legacy, single-condition) or a `conditions` array (multi-condition),
+  and a `recommendation` to surface if the rule fails.
 - Evaluate a single rule against a facts object (`evaluateRule`), or a
   whole set of rules at once (`evaluateRules`), aggregating pass/fail/
   warning/critical counts.
 - Maintain a catalog of rules (`createRule`, `updateRule`, `deleteRule`,
   `getRule`, `listRules`, `listRulesByCategory`) that any department can
   query and reuse.
-- Support eleven comparison operators (`equals`, `notEquals`,
+- Support thirteen comparison operators (`equals`, `notEquals`,
   `greaterThan`, `greaterThanOrEqual`, `lessThan`, `lessThanOrEqual`,
-  `contains`, `notContains`, `exists`, `missing`, `regex`) using only
-  plain JavaScript comparisons — no AI, no external calls.
+  `contains`, `notContains`, `startsWith`, `endsWith`, `exists`,
+  `missing`, `regex` — plus snake_case aliases for each, see "Evolution"
+  above) using only plain JavaScript comparisons — no AI, no external
+  calls.
 
 ## Architecture
 
@@ -122,7 +191,7 @@ Facts
 
 Rule
   field: "titleLength"
-  operator: "greaterThan"
+  operator: "lessThanOrEqual"
   expectedValue: 60
 
         │

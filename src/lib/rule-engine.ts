@@ -1,8 +1,14 @@
 import type {
   Rule,
+  RuleCondition,
+  RuleConditionResult,
   RuleResult,
   RuleEvaluation,
   RuleCategory,
+  RuleOperator,
+  RuleOperatorInput,
+  RuleOperatorAlias,
+  RuleValidationResult,
   CreateRuleInput,
   UpdateRuleInput,
   ListRulesFilter,
@@ -13,8 +19,26 @@ import type {
 // Evaluates supplied facts against reusable business rules. It does NOT
 // discover data, does NOT crawl, does NOT extract metadata, and does NOT
 // perform SEO analysis — it only compares whatever facts it's given
-// against a Rule's configured field/operator/expectedValue, using plain
-// JavaScript comparisons. No AI.
+// against a Rule's configured condition(s), using plain JavaScript
+// comparisons. No AI.
+//
+// EVOLUTION (v1 -> multi-condition): this file originally supported only
+// single-condition rules (`field`/`operator`/`expectedValue` directly on
+// `Rule`), dispatched via a switch statement. This revision adds:
+//   - multi-condition rules (`Rule.conditions`), evaluated with AND
+//     semantics — every condition must pass for the rule to pass
+//   - two new operators (`startsWith`, `endsWith`)
+//   - snake_case operator aliases, normalized via `normalizeRuleOperator()`
+//   - dispatch via `evaluateOperator()` against an operator lookup map,
+//     replacing the old switch statement (no giant switch, per the
+//     engineering requirement for this revision)
+//   - `validateRule()`, a new method
+//   - `matchedConditions`/`executionTimeMs` added to `RuleResult`
+// Every v1 public method, field, and enum value is still here, unchanged
+// in behavior. A rule built the old way (no `conditions`, camelCase
+// operator) evaluates to the exact same RuleResult it always did — see
+// docs/architecture/rule-engine.md for the full writeup of this
+// evolution.
 //
 // Architecture: the dependency direction is
 //   Rule Engine -> Insight Engine -> Mission Control
@@ -41,7 +65,8 @@ function notImplemented(action: string): never {
 
 // --- Operator comparisons -----------------------------------------------
 // Each comparison is a small, focused, independently testable function.
-// `evaluateRule()` below is the only place that dispatches between them.
+// `evaluateOperator()` below is the only place that dispatches between
+// them, via a lookup map — no switch statement.
 
 function compareEquals(actual: unknown, expected: unknown): boolean {
   return actual === expected;
@@ -81,6 +106,16 @@ function compareNotContains(actual: unknown, expected: unknown): boolean {
   return !compareContains(actual, expected);
 }
 
+/** NEW operator. */
+function compareStartsWith(actual: unknown, expected: unknown): boolean {
+  return typeof actual === "string" && typeof expected === "string" && actual.startsWith(expected);
+}
+
+/** NEW operator. */
+function compareEndsWith(actual: unknown, expected: unknown): boolean {
+  return typeof actual === "string" && typeof expected === "string" && actual.endsWith(expected);
+}
+
 function compareExists(actual: unknown): boolean {
   return actual !== undefined && actual !== null;
 }
@@ -94,82 +129,178 @@ function compareRegex(actual: unknown, expected: unknown): boolean {
   try {
     return new RegExp(expected).test(actual);
   } catch {
-    // An invalid regex pattern in `expectedValue` fails the rule rather
-    // than throwing, so one malformed rule can't break a whole
+    // An invalid regex pattern in the expected value fails the rule
+    // rather than throwing, so one malformed rule can't break a whole
     // evaluateRules() pass.
     return false;
   }
 }
 
+// --- Operator registry (no switch statement) -----------------------------
+
+type OperatorEvaluator = (actual: unknown, expected: unknown) => boolean;
+
+const OPERATOR_REGISTRY: Record<RuleOperator, OperatorEvaluator> = {
+  equals: compareEquals,
+  notEquals: compareNotEquals,
+  greaterThan: compareGreaterThan,
+  greaterThanOrEqual: compareGreaterThanOrEqual,
+  lessThan: compareLessThan,
+  lessThanOrEqual: compareLessThanOrEqual,
+  contains: compareContains,
+  notContains: compareNotContains,
+  startsWith: compareStartsWith,
+  endsWith: compareEndsWith,
+  exists: compareExists,
+  missing: compareMissing,
+  regex: compareRegex,
+};
+
 /**
- * Builds a short, human-readable explanation of a rule's outcome.
+ * Maps a snake_case operator alias onto its canonical camelCase
+ * `RuleOperator`. Both naming conventions are accepted anywhere an
+ * operator is specified; this is the one place that reconciles them.
  */
-function buildMessage(rule: Rule, actualValue: unknown, passed: boolean): string {
-  const verb = passed ? "passed" : "failed";
-  if (rule.operator === "exists" || rule.operator === "missing") {
-    return `${rule.name} ${verb}: expected "${rule.field}" to ${
-      rule.operator === "exists" ? "exist" : "be missing"
-    } (actual: ${JSON.stringify(actualValue)}).`;
+const OPERATOR_ALIASES: Record<RuleOperatorAlias, RuleOperator> = {
+  not_equals: "notEquals",
+  greater_than: "greaterThan",
+  greater_than_or_equal: "greaterThanOrEqual",
+  less_than: "lessThan",
+  less_than_or_equal: "lessThanOrEqual",
+  not_contains: "notContains",
+  starts_with: "startsWith",
+  ends_with: "endsWith",
+  matches_regex: "regex",
+  not_exists: "missing",
+};
+
+/**
+ * Normalizes either operator spelling (camelCase `RuleOperator` or a
+ * snake_case `RuleOperatorAlias`) to its canonical `RuleOperator` form.
+ * Exported as a compatibility helper — a future rule-authoring UI or
+ * importer can call this directly to normalize rules before storing them.
+ */
+export function normalizeRuleOperator(operator: RuleOperatorInput): RuleOperator {
+  return operator in OPERATOR_ALIASES ? OPERATOR_ALIASES[operator as RuleOperatorAlias] : (operator as RuleOperator);
+}
+
+/**
+ * Looks up and runs the comparison function for a given operator (in
+ * either naming convention) against an actual/expected value pair. This
+ * is the operator dispatcher — a lookup into `OPERATOR_REGISTRY`, never a
+ * switch statement, so adding a new operator later means adding one map
+ * entry, not a new branch.
+ */
+function evaluateOperator(operator: RuleOperatorInput, actual: unknown, expected: unknown): boolean {
+  const canonical = normalizeRuleOperator(operator);
+  const evaluator = OPERATOR_REGISTRY[canonical];
+  return evaluator(actual, expected);
+}
+
+/**
+ * Resolves a Rule down to the list of conditions it should be evaluated
+ * against — its `conditions` array if present and non-empty (new,
+ * multi-condition path), otherwise its legacy `field`/`operator`/
+ * `expectedValue` triple as a single implied condition (v1 path). Returns
+ * an empty array for a rule that defines neither, which `evaluateRule()`
+ * treats as a reportable misconfiguration rather than a crash.
+ */
+function resolveConditions(rule: Rule): RuleCondition[] {
+  if (rule.conditions && rule.conditions.length > 0) {
+    return rule.conditions;
   }
-  return `${rule.name} ${verb}: expected "${rule.field}" ${rule.operator} ${JSON.stringify(
-    rule.expectedValue,
-  )}, got ${JSON.stringify(actualValue)}.`;
+  if (rule.field !== undefined && rule.operator !== undefined) {
+    return [{ field: rule.field, operator: rule.operator, value: rule.expectedValue }];
+  }
+  return [];
+}
+
+/**
+ * Builds a short, human-readable explanation of a rule's outcome. Single
+ * condition: identical wording to v1's message format, so existing
+ * consumers reading `RuleResult.message` see no change for legacy rules.
+ * Multiple conditions: a per-condition summary.
+ */
+function buildMessage(rule: Rule, conditionResults: RuleConditionResult[], passed: boolean): string {
+  const verb = passed ? "passed" : "failed";
+
+  if (conditionResults.length === 1) {
+    const c = conditionResults[0];
+    if (c.operator === "exists" || c.operator === "missing") {
+      return `${rule.name} ${verb}: expected "${c.field}" to ${
+        c.operator === "exists" ? "exist" : "be missing"
+      } (actual: ${JSON.stringify(c.actualValue)}).`;
+    }
+    return `${rule.name} ${verb}: expected "${c.field}" ${c.operator} ${JSON.stringify(
+      c.expectedValue,
+    )}, got ${JSON.stringify(c.actualValue)}.`;
+  }
+
+  const summary = conditionResults
+    .map(
+      (c) =>
+        `${c.field} ${c.operator} ${JSON.stringify(c.expectedValue)} => ${c.passed ? "ok" : "FAILED"}`,
+    )
+    .join("; ");
+  return `${rule.name} ${verb} (${conditionResults.length} conditions): ${summary}`;
 }
 
 export const ruleEngine = {
   /**
    * Evaluates a single Rule against a supplied facts object using plain
-   * JavaScript comparisons — no AI, no external calls.
+   * JavaScript comparisons — no AI, no external calls. Supports both
+   * legacy single-condition rules and new multi-condition rules
+   * transparently; the caller doesn't need to know which kind of rule
+   * it's passing in.
    */
   evaluateRule(rule: Rule, facts: Record<string, unknown>): RuleResult {
-    const actualValue = facts[rule.field];
-    let passed: boolean;
+    const start = performance.now();
+    const conditions = resolveConditions(rule);
+    const evaluatedAt = new Date().toISOString();
 
-    switch (rule.operator) {
-      case "equals":
-        passed = compareEquals(actualValue, rule.expectedValue);
-        break;
-      case "notEquals":
-        passed = compareNotEquals(actualValue, rule.expectedValue);
-        break;
-      case "greaterThan":
-        passed = compareGreaterThan(actualValue, rule.expectedValue);
-        break;
-      case "greaterThanOrEqual":
-        passed = compareGreaterThanOrEqual(actualValue, rule.expectedValue);
-        break;
-      case "lessThan":
-        passed = compareLessThan(actualValue, rule.expectedValue);
-        break;
-      case "lessThanOrEqual":
-        passed = compareLessThanOrEqual(actualValue, rule.expectedValue);
-        break;
-      case "contains":
-        passed = compareContains(actualValue, rule.expectedValue);
-        break;
-      case "notContains":
-        passed = compareNotContains(actualValue, rule.expectedValue);
-        break;
-      case "exists":
-        passed = compareExists(actualValue);
-        break;
-      case "missing":
-        passed = compareMissing(actualValue);
-        break;
-      case "regex":
-        passed = compareRegex(actualValue, rule.expectedValue);
-        break;
+    if (conditions.length === 0) {
+      // Misconfigured rule (neither legacy field/operator nor
+      // conditions[] is set) — never crash; report it as a failing,
+      // clearly-explained result instead.
+      return {
+        ruleId: rule.id,
+        passed: false,
+        severity: rule.severity,
+        message: `${rule.name} could not be evaluated: no conditions are defined (neither legacy field/operator nor conditions[] is set).`,
+        recommendation: rule.recommendation,
+        actualValue: undefined,
+        expectedValue: undefined,
+        evaluatedAt,
+        matchedConditions: [],
+        executionTimeMs: Math.round(performance.now() - start),
+      };
     }
+
+    const matchedConditions: RuleConditionResult[] = conditions.map((condition) => {
+      const actualValue = facts[condition.field];
+      return {
+        field: condition.field,
+        operator: normalizeRuleOperator(condition.operator),
+        passed: evaluateOperator(condition.operator, actualValue, condition.value),
+        actualValue,
+        expectedValue: condition.value,
+      };
+    });
+
+    const passed = matchedConditions.every((c) => c.passed);
+    const representative = matchedConditions.find((c) => !c.passed) ?? matchedConditions[0];
 
     return {
       ruleId: rule.id,
       passed,
       severity: rule.severity,
-      message: buildMessage(rule, actualValue, passed),
+      message: buildMessage(rule, matchedConditions, passed),
       recommendation: rule.recommendation,
-      actualValue,
-      expectedValue: rule.expectedValue,
-      evaluatedAt: new Date().toISOString(),
+      actualValue: representative.actualValue,
+      expectedValue: representative.expectedValue,
+      evaluatedAt,
+      matchedConditions,
+      executionTimeMs: Math.round(performance.now() - start),
     };
   },
 
@@ -194,6 +325,51 @@ export const ruleEngine = {
       results,
       evaluatedAt: new Date().toISOString(),
     };
+  },
+
+  /**
+   * NEW: validates a Rule's structure — independent of any facts — to
+   * catch misconfiguration before it's stored: no conditions defined,
+   * an unrecognized operator, or an invalid regex pattern. Synchronous
+   * and pure, like `evaluateRule`/`evaluateRules`, since it needs no
+   * persistence.
+   */
+  validateRule(rule: Rule): RuleValidationResult {
+    const errors: string[] = [];
+
+    if (!rule.name?.trim()) {
+      errors.push("Rule must have a non-empty name.");
+    }
+
+    const conditions = resolveConditions(rule);
+    if (conditions.length === 0) {
+      errors.push(
+        "Rule must define either field/operator/expectedValue (legacy) or a non-empty conditions[] array.",
+      );
+    }
+
+    for (const condition of conditions) {
+      if (!condition.field?.trim()) {
+        errors.push('A condition is missing a "field".');
+        continue;
+      }
+
+      const canonical = normalizeRuleOperator(condition.operator);
+      if (!(canonical in OPERATOR_REGISTRY)) {
+        errors.push(`Condition on "${condition.field}" uses an unrecognized operator: "${condition.operator}".`);
+        continue;
+      }
+
+      if (canonical === "regex" && typeof condition.value === "string") {
+        try {
+          new RegExp(condition.value);
+        } catch {
+          errors.push(`Condition on "${condition.field}" has an invalid regex pattern: "${condition.value}".`);
+        }
+      }
+    }
+
+    return { valid: errors.length === 0, errors };
   },
 
   /**
