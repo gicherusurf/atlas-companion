@@ -1,5 +1,7 @@
 import { businessService } from "@/lib/business-service";
 import { metadataExtractor } from "@/lib/metadata-extractor";
+import { atlasHttp } from "@/lib/http-client";
+import type { HttpError } from "@/types/http";
 import type { OpenGraph } from "@/types/metadata";
 import type {
   WebsiteReachabilityResult,
@@ -18,27 +20,29 @@ import type {
 // `businessId` — a business's own website is looked up via
 // `businessService.getBusiness(businessId)` before any discovery work.
 //
-// RUNTIME NOTE: Atlas runs in the browser (Vite). Every fetch below is a
-// direct browser `fetch()` call, which has two real consequences:
-//   1. CORS — most external sites do not send permissive CORS headers,
-//      so a direct browser fetch to an arbitrary business's homepage,
-//      robots.txt, or sitemap will frequently fail even when the site is
-//      perfectly reachable. `safeFetch()` treats this the same as any
-//      other network failure (never throws; reports it as unreachable).
-//   2. Opaque redirects/responses — browser fetch cannot always expose
-//      full response detail for cross-origin requests.
+// NETWORKING: every HTTP call in this file goes through `atlasHttp`
+// (`src/lib/http-client.ts`) rather than calling `fetch()` directly, per
+// Atlas's kernel networking layer. `atlasHttp` already handles timeout,
+// redirect-following, timing, and error normalization — this file no
+// longer needs its own `safeFetch`/`fetchWithTiming` helpers, since that
+// responsibility now lives in the HTTP Client itself.
 //
-// TODO(edge-function): every fetch call site below is marked with a
-// TODO(edge-function) comment. The intended fix for both issues above is
-// to move these HTTP calls behind a Supabase Edge Function (or an
-// equivalent backend/edge proxy) that fetches server-side and returns a
-// clean JSON result — at that point, each method's *public API defined
-// here does not change at all*; only the internal fetch calls get
-// replaced with calls to that edge function. That's the whole point of
-// keeping `normalizeUrl`/`safeFetch`/`fetchWithTiming` as small, isolated
-// helpers: swapping their internals later is a contained change.
+// RUNTIME NOTE: Atlas runs in the browser (Vite). Most external sites do
+// not send permissive CORS headers, so a browser-side request to an
+// arbitrary business's homepage, robots.txt, or sitemap will frequently
+// fail even when the site is perfectly reachable — `atlasHttp` surfaces
+// that as a thrown `HttpError`, which every method below catches and
+// treats the same as "not reachable"/"doesn't exist," per "never crash."
+//
+// TODO(edge-function): every `atlasHttp` call below is marked with a
+// TODO(edge-function) comment. The intended fix for CORS is to move these
+// calls behind a Supabase Edge Function (or an equivalent backend/edge
+// proxy) that performs the request server-side — at that point, only the
+// URL each call targets changes (pointing at the edge function instead of
+// the target site directly); every public method's signature and
+// behavior defined here stays the same.
 
-// --- Shared helpers ------------------------------------------------------
+// --- Local (domain-specific, not networking) helpers ---------------------
 
 /**
  * Normalizes a business-supplied website string (which may be missing a
@@ -76,38 +80,6 @@ async function getNormalizedWebsite(businessId: string): Promise<string | null> 
   const business = await businessService.getBusiness(businessId);
   if (!business?.website) return null;
   return normalizeUrl(business.website);
-}
-
-/**
- * Wraps `fetch()` so a network failure (DNS failure, CORS rejection,
- * timeout, offline, etc.) is reported as a structured result instead of
- * throwing. This is the single point every other fetch in this file goes
- * through, per "never crash — return structured failures."
- */
-async function safeFetch(
-  url: string,
-  init?: RequestInit,
-): Promise<{ response: Response | null; error: string | null }> {
-  try {
-    const response = await fetch(url, init);
-    return { response, error: null };
-  } catch (err) {
-    return { response: null, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-/**
- * Same as `safeFetch()`, but also measures elapsed time in milliseconds —
- * used by `discoverWebsite()` to report `responseTimeMs`.
- */
-async function fetchWithTiming(
-  url: string,
-  init?: RequestInit,
-): Promise<{ response: Response | null; error: string | null; durationMs: number }> {
-  const start = performance.now();
-  const { response, error } = await safeFetch(url, init);
-  const durationMs = Math.round(performance.now() - start);
-  return { response, error, durationMs };
 }
 
 /**
@@ -160,6 +132,23 @@ function toDiscoveryOpenGraph(og: OpenGraph): OpenGraphTags {
   };
 }
 
+/**
+ * Type guard narrowing a caught exception to the `HttpError` shape
+ * `atlasHttp` throws, so each method below can distinguish "the request
+ * failed outright" (network/timeout/CORS — expected, handled gracefully)
+ * from a genuine bug elsewhere in the method (which should NOT be
+ * silently swallowed the same way).
+ */
+function isHttpError(err: unknown): err is HttpError {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "retryable" in err &&
+    "status" in err &&
+    "url" in err
+  );
+}
+
 export const websiteDiscoveryService = {
   /**
    * Checks whether the business's website is reachable, follows redirects
@@ -168,59 +157,41 @@ export const websiteDiscoveryService = {
   async discoverWebsite(businessId: string): Promise<WebsiteReachabilityResult> {
     const checkedAt = new Date().toISOString();
 
-    try {
-      const normalized = await getNormalizedWebsite(businessId);
-      if (!normalized) {
-        return {
-          businessId,
-          reachable: false,
-          finalUrl: null,
-          httpsEnabled: false,
-          statusCode: null,
-          responseTimeMs: null,
-          checkedAt,
-        };
-      }
-
-      // TODO(edge-function): replace with a call to a Supabase Edge
-      // Function that performs this fetch server-side, avoiding CORS and
-      // giving reliable access to the final redirected URL.
-      const { response, durationMs } = await fetchWithTiming(normalized, {
-        method: "GET",
-        redirect: "follow",
-      });
-
-      if (!response) {
-        return {
-          businessId,
-          reachable: false,
-          finalUrl: null,
-          httpsEnabled: normalized.startsWith("https://"),
-          statusCode: null,
-          responseTimeMs: durationMs,
-          checkedAt,
-        };
-      }
-
-      const finalUrl = response.url || normalized;
-      return {
-        businessId,
-        reachable: response.ok,
-        finalUrl,
-        httpsEnabled: finalUrl.startsWith("https://"),
-        statusCode: response.status,
-        responseTimeMs: durationMs,
-        checkedAt,
-      };
-    } catch {
-      // Absolute last-resort guard — every branch above already handles
-      // its own failures, but this keeps the "never crash" guarantee
-      // even against a mistake introduced in a future edit.
+    const normalized = await getNormalizedWebsite(businessId);
+    if (!normalized) {
       return {
         businessId,
         reachable: false,
         finalUrl: null,
         httpsEnabled: false,
+        statusCode: null,
+        responseTimeMs: null,
+        checkedAt,
+      };
+    }
+
+    try {
+      // TODO(edge-function): replace with a call to a Supabase Edge
+      // Function that performs this request server-side, avoiding CORS
+      // and giving reliable access to the final redirected URL.
+      const response = await atlasHttp.get(normalized, { followRedirects: true });
+
+      return {
+        businessId,
+        reachable: response.ok,
+        finalUrl: response.url,
+        httpsEnabled: response.url.startsWith("https://"),
+        statusCode: response.status,
+        responseTimeMs: response.durationMs,
+        checkedAt,
+      };
+    } catch (err) {
+      if (!isHttpError(err)) throw err;
+      return {
+        businessId,
+        reachable: false,
+        finalUrl: null,
+        httpsEnabled: normalized.startsWith("https://"),
         statusCode: null,
         responseTimeMs: null,
         checkedAt,
@@ -235,28 +206,30 @@ export const websiteDiscoveryService = {
   async discoverRobotsTxt(businessId: string): Promise<RobotsTxtResult> {
     const checkedAt = new Date().toISOString();
 
-    try {
-      const normalized = await getNormalizedWebsite(businessId);
-      if (!normalized) {
-        return { businessId, exists: false, content: null, sitemapUrls: [], checkedAt };
-      }
+    const normalized = await getNormalizedWebsite(businessId);
+    if (!normalized) {
+      return { businessId, exists: false, content: null, sitemapUrls: [], checkedAt };
+    }
 
+    try {
       const robotsUrl = `${getOrigin(normalized)}/robots.txt`;
       // TODO(edge-function): replace with a call to a Supabase Edge
       // Function — see discoverWebsite() for why.
-      const { response } = await safeFetch(robotsUrl);
+      const response = await atlasHttp.get<string>(robotsUrl);
 
-      if (!response || !response.ok) {
+      if (!response.ok || response.body === null) {
         return { businessId, exists: false, content: null, sitemapUrls: [], checkedAt };
       }
 
-      const content = await response.text().catch(() => null);
-      if (content === null) {
-        return { businessId, exists: false, content: null, sitemapUrls: [], checkedAt };
-      }
-
-      return { businessId, exists: true, content, sitemapUrls: parseRobots(content), checkedAt };
-    } catch {
+      return {
+        businessId,
+        exists: true,
+        content: response.body,
+        sitemapUrls: parseRobots(response.body),
+        checkedAt,
+      };
+    } catch (err) {
+      if (!isHttpError(err)) throw err;
       return { businessId, exists: false, content: null, sitemapUrls: [], checkedAt };
     }
   },
@@ -268,35 +241,36 @@ export const websiteDiscoveryService = {
   async discoverSitemap(businessId: string): Promise<SitemapResult> {
     const checkedAt = new Date().toISOString();
 
-    try {
-      const normalized = await getNormalizedWebsite(businessId);
-      if (!normalized) {
-        return { businessId, exists: false, urls: [], urlCount: 0, checkedAt };
-      }
+    const normalized = await getNormalizedWebsite(businessId);
+    if (!normalized) {
+      return { businessId, exists: false, urls: [], urlCount: 0, checkedAt };
+    }
 
-      const robots = await this.discoverRobotsTxt(businessId);
-      const candidateUrls =
-        robots.sitemapUrls.length > 0 ? robots.sitemapUrls : [`${getOrigin(normalized)}/sitemap.xml`];
+    const robots = await this.discoverRobotsTxt(businessId);
+    const candidateUrls =
+      robots.sitemapUrls.length > 0 ? robots.sitemapUrls : [`${getOrigin(normalized)}/sitemap.xml`];
 
-      for (const sitemapUrl of candidateUrls) {
+    for (const sitemapUrl of candidateUrls) {
+      try {
         // TODO(edge-function): replace with a call to a Supabase Edge
         // Function — see discoverWebsite() for why.
-        const { response } = await safeFetch(sitemapUrl);
-        if (!response || !response.ok) continue;
+        const response = await atlasHttp.get<string>(sitemapUrl);
+        if (!response.ok || !response.body) continue;
 
-        const xml = await response.text().catch(() => null);
-        if (!xml) continue;
-
-        const urls = parseSitemap(xml);
+        const urls = parseSitemap(response.body);
         if (urls.length > 0) {
           return { businessId, exists: true, urls, urlCount: urls.length, checkedAt };
         }
+      } catch (err) {
+        if (!isHttpError(err)) throw err;
+        // This candidate sitemap URL failed outright (network/CORS/
+        // timeout) — try the next candidate rather than failing the
+        // whole discovery.
+        continue;
       }
-
-      return { businessId, exists: false, urls: [], urlCount: 0, checkedAt };
-    } catch {
-      return { businessId, exists: false, urls: [], urlCount: 0, checkedAt };
     }
+
+    return { businessId, exists: false, urls: [], urlCount: 0, checkedAt };
   },
 
   /**
@@ -315,30 +289,26 @@ export const websiteDiscoveryService = {
       checkedAt,
     };
 
-    try {
-      const normalized = await getNormalizedWebsite(businessId);
-      if (!normalized) return empty;
+    const normalized = await getNormalizedWebsite(businessId);
+    if (!normalized) return empty;
 
+    try {
       // TODO(edge-function): replace with a call to a Supabase Edge
       // Function — see discoverWebsite() for why.
-      const { response } = await safeFetch(normalized);
-      if (!response || !response.ok) return empty;
+      const response = await atlasHttp.get<string>(normalized);
+      if (!response.ok || !response.body) return empty;
 
-      const html = await response.text().catch(() => null);
-      if (!html) return empty;
-
-      const pageUrl = response.url || normalized;
+      const pageUrl = response.url;
 
       // Do NOT duplicate parsing logic here — delegate to the Metadata
       // Extraction Engine. TODO(metadata-extractor): as of this writing,
       // `metadataExtractor.extractMetadata()` itself still throws (see
       // its own TODO(parser) markers in `src/lib/metadata-extractor.ts`)
-      // — implementing HTML parsing is explicitly out of scope for this
-      // task. Until that lands, this call throws and we fall back to
-      // `empty` below; once Metadata Extractor is implemented, this
-      // method starts returning real extracted values with ZERO changes
-      // needed here.
-      const extracted = metadataExtractor.extractMetadata({ html, pageUrl });
+      // — implementing HTML parsing is out of scope for this file. Until
+      // that lands, this call throws and we fall back to `empty` below;
+      // once Metadata Extractor is implemented, this method starts
+      // returning real extracted values with ZERO changes needed here.
+      const extracted = metadataExtractor.extractMetadata({ html: response.body, pageUrl });
 
       const h1 = extracted.headings.find((heading) => heading.level === 1)?.text ?? null;
 
@@ -353,6 +323,9 @@ export const websiteDiscoveryService = {
         checkedAt,
       };
     } catch {
+      // Catches both HttpError (network/CORS/timeout) and the
+      // not-yet-implemented metadataExtractor throw described above —
+      // either way, the honest result today is "no metadata available."
       return empty;
     }
   },
