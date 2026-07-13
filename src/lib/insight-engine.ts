@@ -1,29 +1,54 @@
 import type {
   Insight,
   CreateInsightInput,
+  UpdateInsightInput,
   ListInsightsFilter,
+  RuleResultInsightContext,
+  InsightSummary,
 } from "@/types/insight";
+import type { RuleResult } from "@/types/rule";
 
 // Atlas Insight Engine.
 //
 // Atlas's reasoning-output layer: it converts facts already established
-// elsewhere in Atlas into standardized Insight objects. It does NOT crawl,
-// does NOT perform SEO analysis, and does NOT generate AI responses — it
-// only stores and retrieves the conclusions other modules reach. Every
-// future Atlas department (SEO Audit, Content Engine, Marketing Engine,
-// Finance Engine, etc.) is expected to publish its findings through this
-// engine rather than inventing its own insight storage; Mission Control is
-// expected to read from here rather than from each department directly.
+// elsewhere in Atlas into standardized Insight objects. It does NOT
+// evaluate rules, does NOT inspect pages, does NOT crawl, and does NOT
+// generate AI responses — it only stores/retrieves conclusions, and
+// transforms a Rule Engine `RuleResult` into an `Insight` using entirely
+// generic language. It has no SEO-specific (or any department-specific)
+// wording anywhere in this file.
+//
+// EVOLUTION: this file originally supported creating insights only from
+// a fully-formed `CreateInsightInput` (i.e. a caller already knew the
+// title/description/category/etc. it wanted). This revision adds the
+// ability to generate an insight directly from a `RuleResult`:
+//   - `ruleResultToInsight()`, a new, isolated, pure transformation
+//     helper (RuleResult + context -> CreateInsightInput)
+//   - `createInsight()` gains a second overload accepting
+//     `(ruleResult, context)` in addition to its original
+//     `(input: CreateInsightInput)` signature — existing callers are
+//     completely unaffected
+//   - `createInsights()`, a new batch method (RuleResult[] -> Insight[])
+//   - `summarizeInsights()`, a new, real (non-stub) pure aggregation
+//     function
+//   - `updateInsight()`, a new generic patch method
+// Every v1 method, field, and behavior is unchanged — see
+// docs/architecture/insight-engine.md for the full writeup of this
+// evolution.
 //
 // Design principle: the Insight Engine never decides HOW an engine reaches
 // a conclusion — severity, category, and recommendation are entirely the
 // producing module's call. This engine only standardizes storage and
-// retrieval of whatever conclusion it's given.
+// retrieval of whatever conclusion it's given, and (new) the mechanical
+// transformation of a RuleResult into that standardized shape.
 //
 // Architecture: this file depends on nothing but its own types
-// (`src/types/insight.ts`). It must never import from SEO, Marketing,
-// Finance, the Crawler, Mission Control, or Knowledge Graph modules —
-// those modules will depend on the Insight Engine, never the reverse.
+// (`src/types/insight.ts`) and the `RuleResult` type it transforms
+// (`src/types/rule.ts` — a type-only import, not a dependency on the Rule
+// Engine's actual evaluation logic). It must never import from SEO,
+// Marketing, Finance, the Crawler, Mission Control, or Knowledge Graph
+// modules — those modules will depend on the Insight Engine, never the
+// reverse.
 //
 // Follows the same architecture as the other Atlas services: a plain
 // object of methods (no class), every method scoped by `businessId`, no
@@ -34,16 +59,124 @@ function notImplemented(action: string): never {
   throw new Error(`InsightEngine.${action} is not implemented yet — TODO(supabase): wire this up.`);
 }
 
+/**
+ * Distinguishes a `RuleResult` from a `CreateInsightInput` at the one
+ * call site (`createInsight()`) that accepts either. `RuleResult` is the
+ * only one of the two shapes with both a `passed` boolean and an
+ * `evaluatedAt` timestamp, so checking for those is an unambiguous,
+ * dependency-free discriminator.
+ */
+function isRuleResult(input: CreateInsightInput | RuleResult): input is RuleResult {
+  return typeof (input as RuleResult).passed === "boolean" && "evaluatedAt" in input;
+}
+
+/**
+ * Transforms a Rule Engine `RuleResult` into a `CreateInsightInput`,
+ * using entirely generic language derived from the result itself — this
+ * function has no idea what department produced the underlying rule, and
+ * must stay that way. `context` supplies the business/category/source
+ * information a bare `RuleResult` doesn't carry (see
+ * `RuleResultInsightContext` in `src/types/insight.ts` for why).
+ *
+ * Kept isolated and exported (rather than inlined into `createInsight`)
+ * specifically so this transformation logic has exactly one place it
+ * lives, and can be reused directly by `createInsights()` without
+ * duplicating it.
+ */
+export function ruleResultToInsight(
+  ruleResult: RuleResult,
+  context: RuleResultInsightContext,
+): CreateInsightInput {
+  // RuleResult.message is already a generic, human-readable sentence
+  // (built by the Rule Engine's own buildMessage()) in the shape
+  // "{rule name} {passed|failed}: ...". Splitting on the first colon
+  // gives a short, generic title without this engine needing to know
+  // anything about what the rule was actually checking.
+  const title = ruleResult.message.split(":")[0]?.trim() || ruleResult.message;
+
+  return {
+    businessId: context.businessId,
+    category: context.category,
+    source: context.source,
+    severity: ruleResult.severity,
+    title,
+    summary: title,
+    description: ruleResult.message,
+    recommendation: ruleResult.recommendation,
+    ruleId: ruleResult.ruleId,
+    pageId: context.pageId,
+    jobId: context.jobId,
+    metadata: {
+      actualValue: ruleResult.actualValue,
+      expectedValue: ruleResult.expectedValue,
+      matchedConditions: ruleResult.matchedConditions,
+      executionTimeMs: ruleResult.executionTimeMs,
+    },
+  };
+}
+
+/**
+ * Records a new insight, from either a fully-formed `CreateInsightInput`
+ * (v1 usage, unchanged) or a `RuleResult` plus the context needed to
+ * complete it (new usage). `status` starts as `"new"` either way.
+ *
+ * Declared as a standalone overloaded function (object literal method
+ * shorthand doesn't support overload signatures) and assigned onto
+ * `insightEngine.createInsight` below.
+ */
+async function createInsight(input: CreateInsightInput): Promise<Insight>;
+async function createInsight(ruleResult: RuleResult, context: RuleResultInsightContext): Promise<Insight>;
+async function createInsight(
+  input: CreateInsightInput | RuleResult,
+  context?: RuleResultInsightContext,
+): Promise<Insight> {
+  const resolvedInput: CreateInsightInput = isRuleResult(input)
+    ? ruleResultToInsight(input, context as RuleResultInsightContext)
+    : input;
+
+  // TODO(supabase): supabase.from("insights").insert({
+  //   ...resolvedInput,
+  //   status: "new",
+  // }).select().single()
+  return notImplemented("createInsight");
+}
+
 export const insightEngine = {
+  createInsight,
+
   /**
-   * Records a new insight. `status` starts as `"new"`.
+   * NEW: records one insight per RuleResult in one call — the batch
+   * counterpart to `createInsight(ruleResult, context)`. All insights
+   * share the same `context` (one business, one category/source per
+   * call); evaluate rules across multiple categories separately if
+   * needed.
    */
-  async createInsight(_input: CreateInsightInput): Promise<Insight> {
-    // TODO(supabase): supabase.from("insights").insert({
-    //   ...input,
-    //   status: "new",
-    // }).select().single()
-    return notImplemented("createInsight");
+  async createInsights(ruleResults: RuleResult[], context: RuleResultInsightContext): Promise<Insight[]> {
+    return Promise.all(ruleResults.map((ruleResult) => this.createInsight(ruleResult, context)));
+  },
+
+  /**
+   * NEW: computes a rollup of insight counts. Pure and synchronous (like
+   * the Rule Engine's `evaluateRule`/`evaluateRules`) — it operates on
+   * whatever `Insight[]` the caller supplies (e.g. the result of
+   * `listInsights(businessId)`) rather than fetching internally, so it's
+   * usable and testable without persistence.
+   *
+   * Severity bucket mapping (reconciling this summary's four buckets
+   * with InsightSeverity's five values, without changing InsightSeverity
+   * itself): `critical` -> "critical", `errors` -> "high", `warnings` ->
+   * "medium" or "low", `info` -> "info". `resolved` counts by `status`,
+   * independent of severity.
+   */
+  summarizeInsights(insights: Insight[]): InsightSummary {
+    return {
+      total: insights.length,
+      critical: insights.filter((i) => i.severity === "critical").length,
+      errors: insights.filter((i) => i.severity === "high").length,
+      warnings: insights.filter((i) => i.severity === "medium" || i.severity === "low").length,
+      info: insights.filter((i) => i.severity === "info").length,
+      resolved: insights.filter((i) => i.status === "resolved").length,
+    };
   },
 
   /**
@@ -103,6 +236,17 @@ export const insightEngine = {
     // filter, since "open" spans two status values ("new" AND
     // "acknowledged") and ListInsightsFilter.status only accepts one.
     return [];
+  },
+
+  /**
+   * NEW: patches non-status fields on an existing insight (e.g.
+   * correcting a title, attaching a pageId after the fact). Status
+   * transitions go through `resolveInsight`/`dismissInsight` instead.
+   */
+  async updateInsight(_businessId: string, _insightId: string, _input: UpdateInsightInput): Promise<Insight> {
+    // TODO(supabase): supabase.from("insights").update(input)
+    //   .eq("id", insightId).eq("business_id", businessId).select().single()
+    return notImplemented("updateInsight");
   },
 
   /**
