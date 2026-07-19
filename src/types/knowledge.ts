@@ -93,17 +93,25 @@ export interface KnowledgeGraph {
 }
 
 /**
- * Optional filters for findEntities().
+ * Optional filters for findEntities(). `minConfidence` is a later,
+ * purely additive extension (existing callers that don't set it are
+ * unaffected) — see `knowledge-graph.ts`'s production implementation.
  */
 export interface FindEntitiesFilter {
   type?: KnowledgeEntityType;
   query?: string;
+  minConfidence?: number;
 }
 
 /**
- * Optional filters for findRelationships().
+ * Optional filters for findRelationships(). `sourceEntityId` and
+ * `targetEntityId` are a later, purely additive extension for
+ * direction-specific lookups; `entityId` (matching either side) still
+ * works exactly as before for existing callers.
  */
 export interface FindRelationshipsFilter {
   entityId?: string;
+  sourceEntityId?: string;
+  targetEntityId?: string;
   relationship?: RelationshipType;
 }
